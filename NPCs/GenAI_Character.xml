@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Character speciesname="GenAICompanion"
+           jobid="assistant"
+           Tag="gen_ai_character"
+           tags="other_gen_ai"
+           group="human"
+           humanoid="true"
+           displayname="Helios">
+
+  <ragdolls inherit="true" />
+  <animations inherit="true" />
+  <HeadAttachments inherit="true" />
+  <inventory Slots="Card, Headset, Head, InnerClothes, OuterClothes, LeftHand, RightHand, Bag, Any, Any, Any, Any" 
+           AccessibleWhenAlive="True">
+    <item identifier="idcard" />
+    <item identifier="assistantclothes" />
+</inventory>
+
+  <health maxvitality="100" />
+  <ai combatstrength="50" />
+
+</Character>
