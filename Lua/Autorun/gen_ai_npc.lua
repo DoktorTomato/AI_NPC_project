@@ -1,364 +1,262 @@
-local json = {}
-
-do
-
-  json._version = "0.1.2"
-
-  -------------------------------------------------------------------------------
-  -- Decode
-  -------------------------------------------------------------------------------
-
-  local
-  decode
-
-  local
-  function decode_error(str, pos, msg)
-    local line = 1
-    local col = 1
-    for i = 1, pos - 1 do
-      if str:sub(i, i) == "\n" then
-        line = line + 1
-        col = 1
-      else
-        col = col + 1
-      end
-    end
-    error(string.format("%s at line %d col %d", msg, line, col))
-  end
-
-  local
-  function next_char(str, pos)
-    pos = pos + 1
-    local c = str:sub(pos, pos)
-    if c == "" then
-      return nil
-    end
-    return c, pos
-  end
-
-  local
-  function next_white(str, pos)
-    while true do
-      local c
-      c, pos = next_char(str, pos)
-      if not c or not c:match("%s") then
-        return c, pos
-      end
-    end
-  end
-
-  local
-  function decode_string(str, pos)
-    local res = ""
-    while true do
-      local c, new_pos = next_char(str, pos)
-      if not c then
-        decode_error(str, pos, "unterminated string")
-      end
-      if c == '"' then
-        return res, new_pos
-      elseif c == '\\' then
-        local c2
-        c2, new_pos = next_char(str, new_pos)
-        if c2 == '"' then
-          res = res .. '"'
-        elseif c2 == '\\' then
-          res = res .. '\\'
-        elseif c2 == '/' then
-          res = res .. '/'
-        elseif c2 == 'b' then
-          res = res .. '\b'
-        elseif c2 == 'f' then
-          res = res .. '\f'
-        elseif c2 == 'n' then
-          res = res .. '\n'
-        elseif c2 == 'r' then
-          res = res .. '\r'
-        elseif c2 == 't' then
-          res = res .. '\t'
-        elseif c2 == 'u' then
-          local hex = str:sub(new_pos + 1, new_pos + 4)
-          if not hex:match("^[0-9a-fA-F]{4}$") then
-            decode_error(str, pos, "invalid unicode escape")
-          end
-          -- To keep it simple for Barotrauma, we won't handle unicode conversion
-          -- This part is often not needed for simple dialogue.
-          res = res .. '?'
-          new_pos = new_pos + 4
-        else
-          decode_error(str, pos, "invalid escape char")
-        end
-        pos = new_pos
-      else
-        res = res .. c
-        pos = new_pos
-      end
-    end
-  end
-
-  local
-  function decode_number(str, pos)
-    local num_str = str:match("^-?%d+%.?%d*[eE]?[+-]?%d*", pos)
-    local n = tonumber(num_str)
-    if not n then
-      decode_error(str, pos, "invalid number")
-    end
-    return n, pos + #num_str
-  end
-
-  local
-  function decode_literal(str, pos)
-    local literal_map = {
-      ["true"] = true,
-      ["false"] = false,
-      ["null"] = nil,
-    }
-    for lit, val in pairs(literal_map) do
-      if str:sub(pos, pos + #lit - 1) == lit then
-        return val, pos + #lit
-      end
-    end
-    decode_error(str, pos, "invalid literal")
-  end
-
-  local
-  function decode_array(str, pos)
-    local res = {}
-    while true do
-      local c
-      c, pos = next_white(str, pos)
-      if not c then
-        decode_error(str, pos, "unterminated array")
-      end
-      if c == ']' then
-        return res, pos
-      end
-      local val
-      val, pos = decode(str, pos)
-      table.insert(res, val)
-      c, pos = next_white(str, pos)
-      if c == ']' then
-        return res, pos
-      end
-      if c ~= ',' then
-        decode_error(str, pos, "expected ']' or ','")
-      end
-    end
-  end
-
-  local
-  function decode_object(str, pos)
-    local res = {}
-    while true do
-      local c
-      c, pos = next_white(str, pos)
-      if not c then
-        decode_error(str, pos, "unterminated object")
-      end
-      if c == '}' then
-        return res, pos
-      end
-      if c ~= '"' then
-        decode_error(str, pos, "expected string for key")
-      end
-      local key
-      key, pos = decode_string(str, pos)
-      c, pos = next_white(str, pos)
-      if c ~= ':' then
-        decode_error(str, pos, "expected ':'")
-      end
-      local val
-      val, pos = decode(str, pos + 1)
-      res[key] = val
-      c, pos = next_white(str, pos)
-      if c == '}' then
-        return res, pos
-      end
-      if c ~= ',' then
-        decode_error(str, pos, "expected '}' or ','")
-      end
-    end
-  end
-
-  decode = function(str, pos)
-    local c
-    c, pos = next_white(str, pos or 0)
-    if not c then
-      decode_error(str, pos, "empty string")
-    end
-    if c == '"' then
-      return decode_string(str, pos)
-    end
-    if c == '{' then
-      return decode_object(str, pos + 1)
-    end
-    if c == '[' then
-      return decode_array(str, pos + 1)
-    end
-    if c:match("[-%d]") then
-      return decode_number(str, pos)
-    end
-    return decode_literal(str, pos)
-  end
-
-  function
-  json.decode(str)
-    return decode(str)
-  end
-
-
-  -------------------------------------------------------------------------------
-  -- Encode
-  -------------------------------------------------------------------------------
-
-  local
-  encode
-
-  local
-  escape_char_map = {
-    ['\\'] = '\\\\',
-    ['"'] = '\\"',
-    ['\b'] = '\\b',
-    ['\f'] = '\\f',
-    ['\n'] = '\\n',
-    ['\r'] = '\\r',
-    ['\t'] = '\\t',
-  }
-
-  local
-  function encode_nil(val)
-    return "null"
-  end
-
-  local
-  function encode_table(val, stack)
-    local res = {}
-    stack = stack or {}
-    if stack[val] then
-      error("circular reference")
-    end
-    stack[val] = true
-    if #val > 0 then
-      -- Array
-      for i = 1, #val do
-        table.insert(res, encode(val[i], stack))
-      end
-      stack[val] = nil
-      return "[" .. table.concat(res, ",") .. "]"
-    else
-      -- Object
-      for k, v in pairs(val) do
-        if type(k) ~= "string" then
-          error("invalid key type:" .. type(k))
-        end
-        table.insert(res, encode(k, stack) .. ":" .. encode(v, stack))
-      end
-      stack[val] = nil
-      return "{" .. table.concat(res, ",") .. "}"
-    end
-  end
-
-  local
-  function encode_string(val)
-    return '"' .. val:gsub('[%c"\\]', escape_char_map) .. '"'
-  end
-
-  local
-  function encode_number(val)
-    if val ~= val or val == math.huge or val == -math.huge then
-      error("cannot encode NAN or Infinity")
-    end
-    return string.format("%.14g", val)
-  end
-
-  local
-  type_func_map = {
-    ["nil"] = encode_nil,
-    ["table"] = encode_table,
-    ["string"] = encode_string,
-    ["number"] = encode_number,
-    ["boolean"] = tostring,
-  }
-
-  encode = function(val, stack)
-    local t = type(val)
-    local f = type_func_map[t]
-    if f then
-      return f(val, stack)
-    end
-    error("unsupported type: " .. t)
-  end
-
-  function
-  json.encode(val)
-    return encode(val)
-  end
-end
-
-print("GEN AI NPC SCRIPT LOADED (Networking.HttpPost Version)")
+print(">>>> GEN AI NPC SCRIPT LOADED <<<<")
 
 local PYTHON_SERVER_URL = "http://127.0.0.1:5000/get-ai-response"
 
-function onServerResponse(responseBody)
-    if not responseBody then
-        print("HTTP Request Failed! No response body received.")
-        return
+local json = {}
+do
+  json._version = "0.1.2"
+  local decode
+  local function decode_error(str, pos, msg)
+    local line, col = 1, 1
+    for i = 1, pos - 1 do
+      if str:sub(i, i) == "\n" then line = line + 1; col = 1 else col = col + 1 end
+    end
+    error(string.format("%s at line %d col %d", msg, line, col))
+  end
+  local function next_char(str, pos)
+    pos = pos + 1
+    local c = str:sub(pos, pos)
+    return (c ~= "" and c or nil), pos
+  end
+  local function next_white(str, pos)
+    while true do
+      local c; c, pos = next_char(str, pos)
+      if not c or not c:match("%s") then return c, pos end
+    end
+  end
+  local function decode_string(str, pos)
+    local res = ""
+    while true do
+      local c, new_pos = next_char(str, pos)
+      if not c then decode_error(str, pos, "unterminated string") end
+      if c == '"' then return res, new_pos
+      elseif c == '\\' then
+        local c2; c2, new_pos = next_char(str, new_pos)
+        if c2 == '"' then res = res .. '"' elseif c2 == '\\' then res = res .. '\\' elseif c2 == '/' then res = res .. '/'
+        elseif c2 == 'b' then res = res .. '\b' elseif c2 == 'f' then res = res .. '\f' elseif c2 == 'n' then res = res .. '\n'
+        elseif c2 == 'r' then res = res .. '\r' elseif c2 == 't' then res = res .. '\t'
+        else new_pos = new_pos + 4 end 
+        pos = new_pos
+      else res = res .. c; pos = new_pos end
+    end
+  end
+  local function decode_number(str, pos)
+    local num_str = str:match("^-?%d+%.?%d*[eE]?[+-]?%d*", pos)
+    if not num_str then decode_error(str, pos, "invalid number") end
+    return tonumber(num_str), pos + #num_str
+  end
+  local function decode_literal(str, pos)
+    local literals = {["true"]=true, ["false"]=false, ["null"]=nil}
+    for lit, val in pairs(literals) do
+      if str:sub(pos, pos + #lit - 1) == lit then return val, pos + #lit end
+    end
+    decode_error(str, pos, "invalid literal")
+  end
+  local function decode_array(str, pos)
+    local res = {}
+    local c
+    c, pos = next_white(str, pos)
+    if c == ']' then return res, pos end
+    while true do
+      local val; val, pos = decode(str, pos)
+      table.insert(res, val)
+      c, pos = next_white(str, pos)
+      if c == ']' then return res, pos end
+      if c ~= ',' then decode_error(str, pos, "expected ']' or ','") end
+    end
+  end
+  local function decode_object(str, pos)
+    local res = {}
+    local c
+    c, pos = next_white(str, pos)
+    if c == '}' then return res, pos end
+    while true do
+      local key; key, pos = decode_string(str, pos)
+      c, pos = next_white(str, pos)
+      if c ~= ':' then decode_error(str, pos, "expected ':'") end
+      local val; val, pos = decode(str, pos)
+      res[key] = val
+      c, pos = next_white(str, pos)
+      if c == '}' then return res, pos end
+      if c ~= ',' then decode_error(str, pos, "expected '}' or ','") end
+    end
+  end
+  decode = function(str, pos)
+    local c; c, pos = next_white(str, pos or 0)
+    if not c then decode_error(str, pos, "empty string") end
+    if c == '"' then return decode_string(str, pos)
+    elseif c == '{' then return decode_object(str, pos)
+    elseif c == '[' then return decode_array(str, pos)
+    elseif c:match("[-%d]") then return decode_number(str, pos)
+    else return decode_literal(str, pos) end
+  end
+  json.decode = decode
+  function json.encode(val)
+      local t = type(val)
+      if t == "table" then
+          local res = {}
+          local is_arr = (#val > 0)
+          if is_arr then
+            for _, v in ipairs(val) do table.insert(res, json.encode(v)) end
+            return "[" .. table.concat(res, ",") .. "]"
+          else
+            for k, v in pairs(val) do table.insert(res, '"'..tostring(k)..'":' .. json.encode(v)) end
+            return "{" .. table.concat(res, ",") .. "}"
+          end
+      elseif t == "string" then return '"' .. val .. '"'
+      elseif t == "number" or t == "boolean" then return tostring(val)
+      else return "null" end
+  end
+end
+
+local function sanitize_json_string(str)
+    if not str then return "" end
+    local start_pos = str:find("{")
+    local last_brace = 0
+    local i = str:len()
+    while i > 0 do
+        if str:sub(i, i) == "}" then
+            last_brace = i
+            break
+        end
+        i = i - 1
+    end
+    if start_pos and last_brace > 0 then
+        return str:sub(start_pos, last_brace)
+    end
+    return str
+end
+
+local function get_bot_context(char)
+    local context = {}
+
+    context.health = math.floor(char.Vitality)
+    if char.CharacterHealth then
+        context.oxygen = math.floor(char.CharacterHealth.OxygenAmount)
+    else
+        context.oxygen = 100 
     end
 
-    print("Received response from Python server. Body: " .. responseBody)
+    if char.CurrentHull then
+        context.room_name = char.CurrentHull.RoomName or "Unknown Room"
+    else
+        context.room_name = "Outside Submarine"
+    end
 
-    local success, response_data = pcall(json.decode, responseBody)
+    context.inventory = {}
+    local inventory = char.Inventory
+    if inventory then
+        for item in inventory.AllItems do
+            table.insert(context.inventory, item.Name)
+        end
+    end
+    if #context.inventory == 0 then
+        table.insert(context.inventory, "Nothing")
+    end
+
+    context.nearby_entities = {}
+    for other in Character.CharacterList do
+        if other ~= char and not other.IsDead then
+            if Vector2.Distance(char.WorldPosition, other.WorldPosition) < 500 then
+                local name = other.Name
+                if other.SpeciesName ~= "Human" then
+                    name = other.SpeciesName 
+                end
+                table.insert(context.nearby_entities, name)
+            end
+        end
+    end
+    if #context.nearby_entities == 0 then
+        table.insert(context.nearby_entities, "No one")
+    end
+    
+    return context
+end
+
+function onServerResponse(responseBody)
+    if not responseBody then return end
+
+    local cleanBody = sanitize_json_string(responseBody)
+    local success, response_data = pcall(json.decode, cleanBody)
     
     if success and response_data and response_data.dialogue then
-        for _, character in ipairs(Character.GetList()) do -- Use Character.GetList()
-            if character.SpeciesName == "GenAICompanion" and not character.IsDead then
-                character.Say(response_data.dialogue, ChatMessageType.Default, false, false)
-                print("AI Companion is speaking.")
-                return -- We found one, no need to keep looping
+        for character in Character.CharacterList do
+            if character.SpeciesName == "Human" and character.Info.Name == "Helios" and not character.IsDead then
+                character.Speak(response_data.dialogue, ChatMessageType.Radio)
+                print("AI Companion spoke: " .. response_data.dialogue)
+                return 
             end
         end
     else
-        print("Failed to decode JSON from server response. Content: " .. tostring(responseBody))
+        print("[ERROR] JSON Decode Failed.")
+        print("Raw: " .. tostring(cleanBody))
+        print("Error: " .. tostring(response_data))
     end
 end
 
 function onChatMessage(message, client)
-    if client and client.Character and client.Character.SpeciesName == "GenAICompanion" then
-        return
-    end
+    if client and client.Character and client.Character.Info.Name == "Helios" then return end
 
     local command, args = message:match("(!%S+)%s*(.*)")
-    if not command or command:lower() ~= "!helios" then
-        return -- Message is not for our NPC
-    end
+    if not command or command:lower() ~= "!helios" then return end
     
     local playerMessage = args
     if playerMessage == "" then return end
 
     print("Command received for Helios: '" .. playerMessage .. "'.")
 
-    local aiFound = false
-    for _, character in ipairs(Character.CharacterList) do
-        if character.SpeciesName == "GenAICompanion" and not character.IsDead then
-            aiFound = true
+    local aiBot = nil
+    for character in Character.CharacterList do
+        if character.SpeciesName == "Human" and character.Info.Name == "Helios" and not character.IsDead then
+            aiBot = character
             break
         end
     end
 
-    if aiFound then
-        print("Found GenAICompanion. Sending HTTP request via Networking.HttpPost...")
-
-        local gameState = { last_player_dialogue = playerMessage }
-        local jsonData = json.encode(gameState)
-
-        Networking.HttpPost(PYTHON_SERVER_URL, onServerResponse, jsonData, "application/json")
+    if aiBot then
+        local botStatus = get_bot_context(aiBot)
+        local gameState = { 
+            last_player_dialogue = playerMessage,
+            status = botStatus 
+        }
         
-        return true
+        local jsonData = json.encode(gameState)
+        Networking.HttpPost(PYTHON_SERVER_URL, onServerResponse, jsonData, "application/json")
+        return true 
     end
-    
     return false
 end
 
 Hook.Add("chatmessage", "GenAI_OnChatMessage", onChatMessage)
 
-print(">>>> SCRIPT IS READY. Use '!helios message' to chat. <<<<")
+Game.AddCommand("taghelios", "Turns the nearest human into Helios", function()
+    local player = Character.Controlled
+    if not player then 
+        print("Error: You must be controlling a character.") 
+        return 
+    end
+
+    local closestChar = nil
+    local minDistance = 200 
+
+    for char in Character.CharacterList do
+        if char ~= player and char.SpeciesName == "Human" and not char.IsDead then
+            local dist = Vector2.Distance(player.WorldPosition, char.WorldPosition)
+            if dist < minDistance then
+                minDistance = dist
+                closestChar = char
+            end
+        end
+    end
+
+    if closestChar then
+        closestChar.Info.Name = "Helios"
+        local headset = ItemPrefab.GetItemPrefab("headset")
+        Entity.Spawner.AddItemToSpawnQueue(headset, closestChar.Inventory, nil, nil, function(item)
+            closestChar.Inventory.TryPutItem(item, 3, true, false, closestChar, true)
+        end)
+        print("Success! The crewmate '" .. closestChar.Name .. "' has been upgraded to Helios.")
+    else
+        print("Error: No human found nearby. Stand closer!")
+    end
+end)

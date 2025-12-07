@@ -2,8 +2,6 @@
 <contentpackage name="Generative AI NPC"
                 modversion="HYBRID_FINAL"
                 corepackage="False"
-                gameversion="1.0.0">
-
-  <Character file="%ModDir%/NPCs/GenAI_Character.xml" />
+                gameversion="1.10.7.2">
 
 </contentpackage>
