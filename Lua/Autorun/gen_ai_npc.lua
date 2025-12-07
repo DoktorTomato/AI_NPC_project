@@ -1,5 +1,8 @@
 print(">>>> GEN AI NPC SCRIPT LOADED <<<<")
 
+local thinkTimer = 0
+local thinkInterval = 5.0
+
 local PYTHON_SERVER_URL = "http://127.0.0.1:5000/get-ai-response"
 
 local json = {}
@@ -173,17 +176,54 @@ local function get_bot_context(char)
     return context
 end
 
+local function execute_ai_action(character, action, player_char)
+    local controller = character.AIController
+    if not controller then return end
+
+    print("Executing Order: " .. action)
+
+    if action == "FOLLOW" and player_char then
+        -- Order: Follow the player
+        local orderPrefab = OrderPrefab.Get("follow")
+        -- SetOrder(Order, Option, Target, Giver)
+        character.SetOrder(orderPrefab, nil, player_char, player_char)
+    
+    elseif action == "STOP" then
+        -- Order: Dismiss / Wait
+        local orderPrefab = OrderPrefab.Get("wait")
+        character.SetOrder(orderPrefab, nil, character, nil)
+        character.ClearOrders() -- Clear previous orders
+
+    elseif action == "REPAIR" then
+        -- Order: Repair Hull & Devices
+        local fixLeaks = OrderPrefab.Get("fixleaks")
+        local fixItems = OrderPrefab.Get("repairsystems")
+        character.SetOrder(fixLeaks, nil, character.CurrentHull, nil)
+        character.AddOrder(fixItems, nil, character.CurrentHull, nil)
+
+    elseif action == "FIGHT" then
+        -- Order: Fight Intruders
+        local fight = OrderPrefab.Get("fightintruders")
+        character.SetOrder(fight, nil, character.CurrentHull, nil)
+    end
+end
+
 function onServerResponse(responseBody)
     if not responseBody then return end
 
     local cleanBody = sanitize_json_string(responseBody)
     local success, response_data = pcall(json.decode, cleanBody)
     
-    if success and response_data and response_data.dialogue then
+    if success and response_data then
         for character in Character.CharacterList do
             if character.SpeciesName == "Human" and character.Info.Name == "Helios" and not character.IsDead then
-                character.Speak(response_data.dialogue, ChatMessageType.Radio)
-                print("AI Companion spoke: " .. response_data.dialogue)
+                if response_data.dialogue then
+                    character.Speak(response_data.dialogue, ChatMessageType.Radio)
+                    print("AI Companion spoke: " .. response_data.dialogue)
+                end
+                if response_data.action then
+                    execute_ai_action(character, response_data.action, Character.Controlled)
+                end
                 return 
             end
         end
@@ -258,5 +298,63 @@ Game.AddCommand("taghelios", "Turns the nearest human into Helios", function()
         print("Success! The crewmate '" .. closestChar.Name .. "' has been upgraded to Helios.")
     else
         print("Error: No human found nearby. Stand closer!")
+    end
+end)
+
+Hook.Add("think", "Helios_Autonomy", function()
+    -- Only run if a Round is active
+    if not Game.RoundStarted then return end
+
+    -- Ticker Logic
+    thinkTimer = thinkTimer + 1.0 / 60.0 -- Lua runs at 60fps usually
+    if thinkTimer < thinkInterval then return end
+    thinkTimer = 0 -- Reset timer
+
+    -- FIND HELIOS
+    local helios = nil
+    for char in Character.CharacterList do
+        if char.SpeciesName == "Human" and char.Info.Name == "Helios" and not char.IsDead then
+            helios = char
+            break
+        end
+    end
+    if not helios then return end
+
+    -- CHECK TRIGGERS (Only bother the AI if something happens)
+    local should_trigger_ai = false
+    local trigger_reason = ""
+
+    -- Trigger 1: Pain (Health dropped below 80)
+    if helios.Vitality < 80 then
+        should_trigger_ai = true
+        trigger_reason = "I am injured!"
+    end
+
+    -- Trigger 2: Monsters nearby
+    for other in Character.CharacterList do
+        if other.SpeciesName ~= "Human" and not other.IsDead then
+             if Vector2.Distance(helios.WorldPosition, other.WorldPosition) < 500 then
+                 should_trigger_ai = true
+                 trigger_reason = "There is a monster (" .. other.SpeciesName .. ") right next to me!"
+                 break
+             end
+        end
+    end
+
+    -- EXECUTE (Send to Python unprompted)
+    if should_trigger_ai then
+        -- We construct a "fake" message from the system to prompt the AI
+        print("Triggering Autonomous AI: " .. trigger_reason)
+        
+        local botStatus = get_bot_context(helios)
+        local gameState = { 
+            last_player_dialogue = "[SYSTEM EVENT]: " .. trigger_reason,
+            status = botStatus 
+        }
+        local jsonData = json.encode(gameState)
+        Networking.HttpPost(PYTHON_SERVER_URL, onServerResponse, jsonData, "application/json")
+        
+        -- Increase interval so he doesn't spam scream every 5 seconds
+        thinkTimer = -10 -- Wait 15 seconds before checking again
     end
 end)
