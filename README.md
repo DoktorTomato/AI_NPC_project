@@ -7,7 +7,7 @@ This repo is a project that contains a mod for the Baratrauma game, that adds an
 
 To use this mod put the content of the repository in the folder 'LocalMods' that is located in the root directory of the Baratrauma game.
 
-Also you need to install one mod: [Lua for Barotrauma](https://steamcommunity.com/sharedfiles/filedetails/?id=2559634234)
+Also you need to install this mod: [Lua for Barotrauma](https://steamcommunity.com/sharedfiles/filedetails/?id=2559634234)
 
 Then you may need to install Flask and google-generativeai (as this mod uses Gemini API)
 ```
@@ -31,3 +31,10 @@ To use it in game, you can use the chat command to communicate with him
 ```
 !helios <your message>
 ```
+
+## Examples
+
+![Example 1](images_readme/example1.png)
+
+![Example 2](images_readme/example2.png)
+
