@@ -7,7 +7,7 @@ local PYTHON_SERVER_URL = "http://127.0.0.1:5000/get-ai-response"
 
 local json = {}
 do
-  json._version = "0.1.2"
+  json._version = "0.1.3-fixed"
   local decode
   local function decode_error(str, pos, msg)
     local line, col = 1, 1
@@ -27,15 +27,18 @@ do
       if not c or not c:match("%s") then return c, pos end
     end
   end
-  local function decode_string(str, pos)
+  local function decode_string(str, pos, delim)
+    delim = delim or '"'
     local res = ""
     while true do
       local c, new_pos = next_char(str, pos)
       if not c then decode_error(str, pos, "unterminated string") end
-      if c == '"' then return res, new_pos
+      if c == delim then return res, new_pos
       elseif c == '\\' then
         local c2; c2, new_pos = next_char(str, new_pos)
-        if c2 == '"' then res = res .. '"' elseif c2 == '\\' then res = res .. '\\' elseif c2 == '/' then res = res .. '/'
+        if c2 == '"' then res = res .. '"' 
+        elseif c2 == "'" then res = res .. "'"
+        elseif c2 == '\\' then res = res .. '\\' elseif c2 == '/' then res = res .. '/'
         elseif c2 == 'b' then res = res .. '\b' elseif c2 == 'f' then res = res .. '\f' elseif c2 == 'n' then res = res .. '\n'
         elseif c2 == 'r' then res = res .. '\r' elseif c2 == 't' then res = res .. '\t'
         else new_pos = new_pos + 4 end 
@@ -68,26 +71,39 @@ do
       if c ~= ',' then decode_error(str, pos, "expected ']' or ','") end
     end
   end
+  
   local function decode_object(str, pos)
     local res = {}
     local c
     c, pos = next_white(str, pos)
     if c == '}' then return res, pos end
+
+    if c ~= '"' and c ~= "'" then decode_error(str, pos, "expected string key") end
+
     while true do
-      local key; key, pos = decode_string(str, pos)
+      local key
+      if c == "'" then key, pos = decode_string(str, pos, "'")
+      else key, pos = decode_string(str, pos, '"') end
+      
       c, pos = next_white(str, pos)
       if c ~= ':' then decode_error(str, pos, "expected ':'") end
+      
       local val; val, pos = decode(str, pos)
       res[key] = val
+      
       c, pos = next_white(str, pos)
       if c == '}' then return res, pos end
       if c ~= ',' then decode_error(str, pos, "expected '}' or ','") end
+      c, pos = next_white(str, pos)
+      if c ~= '"' and c ~= "'" then decode_error(str, pos, "expected string key") end
     end
   end
+
   decode = function(str, pos)
     local c; c, pos = next_white(str, pos or 0)
     if not c then decode_error(str, pos, "empty string") end
-    if c == '"' then return decode_string(str, pos)
+    if c == '"' then return decode_string(str, pos, '"')
+    elseif c == "'" then return decode_string(str, pos, "'") 
     elseif c == '{' then return decode_object(str, pos)
     elseif c == '[' then return decode_array(str, pos)
     elseif c:match("[-%d]") then return decode_number(str, pos)
@@ -140,71 +156,116 @@ local function get_bot_context(char)
         context.oxygen = 100 
     end
 
+    local medical_issues = {}
+    if char.CharacterHealth then
+        for affliction in char.CharacterHealth.GetAllAfflictions() do
+            local strength = math.floor(affliction.Strength)
+            
+            if strength > 5 then
+                local name = "Unknown Injury"
+                if affliction.Prefab and affliction.Prefab.Name then
+                    name = affliction.Prefab.Name.Value
+                end
+                table.insert(medical_issues, string.format("%s (Severity: %d)", name, strength))
+            end
+        end
+    end
+    
+    if #medical_issues > 0 then
+        context.medical = table.concat(medical_issues, ", ")
+    else
+        context.medical = "Healthy"
+    end
+
     if char.CurrentHull then
         context.room_name = char.CurrentHull.RoomName or "Unknown Room"
     else
-        context.room_name = "Outside Submarine"
+        context.room_name = "Outside"
     end
 
     context.inventory = {}
-    local inventory = char.Inventory
-    if inventory then
-        for item in inventory.AllItems do
+    if char.Inventory then
+        for item in char.Inventory.AllItems do
             table.insert(context.inventory, item.Name)
         end
     end
-    if #context.inventory == 0 then
-        table.insert(context.inventory, "Nothing")
-    end
+    if #context.inventory == 0 then table.insert(context.inventory, "Nothing") end
 
     context.nearby_entities = {}
     for other in Character.CharacterList do
         if other ~= char and not other.IsDead then
             if Vector2.Distance(char.WorldPosition, other.WorldPosition) < 500 then
                 local name = other.Name
-                if other.SpeciesName ~= "Human" then
-                    name = other.SpeciesName 
-                end
+                if other.SpeciesName ~= "Human" then name = other.SpeciesName end
                 table.insert(context.nearby_entities, name)
             end
         end
     end
-    if #context.nearby_entities == 0 then
-        table.insert(context.nearby_entities, "No one")
-    end
-    
+    if #context.nearby_entities == 0 then table.insert(context.nearby_entities, "No one") end
+
     return context
+end
+
+local function find_order_prefab(identifier)
+    for prefab in OrderPrefab.Prefabs do
+        if prefab.Identifier == identifier then
+            return prefab
+        end
+    end
+    return nil
+end
+
+local function assign_order(character, prefab_name, target_entity)
+    local prefab = find_order_prefab(prefab_name)
+    if not prefab then 
+        print("Error: Could not find order prefab '" .. prefab_name .. "'")
+        return false 
+    end
+
+    local newOrder = Order(prefab, target_entity, nil, character)
+    
+    character.SetOrder(newOrder, nil, character)
+    return true
 end
 
 local function execute_ai_action(character, action, player_char)
     local controller = character.AIController
     if not controller then return end
 
+    action = string.upper(action)
     print("Executing Order: " .. action)
 
     if action == "FOLLOW" and player_char then
-        -- Order: Follow the player
-        local orderPrefab = OrderPrefab.Get("follow")
-        -- SetOrder(Order, Option, Target, Giver)
-        character.SetOrder(orderPrefab, nil, player_char, player_char)
+        if assign_order(character, "follow", player_char) then
+            character.Speak("Copy. Following.", ChatMessageType.Order)
+        end
     
     elseif action == "STOP" then
-        -- Order: Dismiss / Wait
-        local orderPrefab = OrderPrefab.Get("wait")
-        character.SetOrder(orderPrefab, nil, character, nil)
-        character.ClearOrders() -- Clear previous orders
+        if assign_order(character, "wait", character) then
+            character.Speak("Holding position.", ChatMessageType.Order)
+        end
 
     elseif action == "REPAIR" then
-        -- Order: Repair Hull & Devices
-        local fixLeaks = OrderPrefab.Get("fixleaks")
-        local fixItems = OrderPrefab.Get("repairsystems")
-        character.SetOrder(fixLeaks, nil, character.CurrentHull, nil)
-        character.AddOrder(fixItems, nil, character.CurrentHull, nil)
+        character.ClearOrders()
+        
+        assign_order(character, "fixleaks", character.CurrentHull)
+        
+        local prefab = find_order_prefab("repairsystems")
+        if prefab then
+            local order2 = Order(prefab, character.CurrentHull, character)
+            character.AddOrder(order2, nil, character)
+        end
+        
+        character.Speak("Starting repairs.", ChatMessageType.Order)
 
     elseif action == "FIGHT" then
-        -- Order: Fight Intruders
-        local fight = OrderPrefab.Get("fightintruders")
-        character.SetOrder(fight, nil, character.CurrentHull, nil)
+        if assign_order(character, "fightintruders", character.CurrentHull) then
+            local target = character.CurrentHull.GetClosestCharacter(character.WorldPosition)
+            if target and target ~= character then
+                controller.SelectTarget(target)
+            end
+            character.Speak("Engaging hostiles!", ChatMessageType.Order)
+        end
     end
 end
 
@@ -302,15 +363,12 @@ Game.AddCommand("taghelios", "Turns the nearest human into Helios", function()
 end)
 
 Hook.Add("think", "Helios_Autonomy", function()
-    -- Only run if a Round is active
     if not Game.RoundStarted then return end
 
-    -- Ticker Logic
-    thinkTimer = thinkTimer + 1.0 / 60.0 -- Lua runs at 60fps usually
+    thinkTimer = thinkTimer + 1.0 / 60.0
     if thinkTimer < thinkInterval then return end
-    thinkTimer = 0 -- Reset timer
+    thinkTimer = 0
 
-    -- FIND HELIOS
     local helios = nil
     for char in Character.CharacterList do
         if char.SpeciesName == "Human" and char.Info.Name == "Helios" and not char.IsDead then
@@ -320,30 +378,25 @@ Hook.Add("think", "Helios_Autonomy", function()
     end
     if not helios then return end
 
-    -- CHECK TRIGGERS (Only bother the AI if something happens)
     local should_trigger_ai = false
     local trigger_reason = ""
 
-    -- Trigger 1: Pain (Health dropped below 80)
     if helios.Vitality < 80 then
         should_trigger_ai = true
         trigger_reason = "I am injured!"
     end
 
-    -- Trigger 2: Monsters nearby
     for other in Character.CharacterList do
         if other.SpeciesName ~= "Human" and not other.IsDead then
              if Vector2.Distance(helios.WorldPosition, other.WorldPosition) < 500 then
                  should_trigger_ai = true
-                 trigger_reason = "There is a monster (" .. other.SpeciesName .. ") right next to me!"
+                 trigger_reason = "There is a monster   right next to me!"
                  break
              end
         end
     end
 
-    -- EXECUTE (Send to Python unprompted)
     if should_trigger_ai then
-        -- We construct a "fake" message from the system to prompt the AI
         print("Triggering Autonomous AI: " .. trigger_reason)
         
         local botStatus = get_bot_context(helios)
@@ -353,8 +406,6 @@ Hook.Add("think", "Helios_Autonomy", function()
         }
         local jsonData = json.encode(gameState)
         Networking.HttpPost(PYTHON_SERVER_URL, onServerResponse, jsonData, "application/json")
-        
-        -- Increase interval so he doesn't spam scream every 5 seconds
-        thinkTimer = -10 -- Wait 15 seconds before checking again
+        thinkTimer = -10
     end
 end)
